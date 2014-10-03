@@ -150,6 +150,7 @@ extern ModuleExport size_t
   RegisterSCTImage(void),
   RegisterSFWImage(void),
   RegisterSGIImage(void),
+  RegisterSIXELImage(void),
   RegisterSHTMLImage(void),
   RegisterSTEGANOImage(void),
   RegisterSUNImage(void),
