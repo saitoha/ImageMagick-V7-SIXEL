@@ -1033,7 +1033,7 @@ static Image *ReadSIXELImage(const ImageInfo *image_info,ExceptionInfo *exceptio
   /*
     Decode SIXEL
   */
-  if (sixel_decode((unsigned char *)sixel_buffer, &sixel_pixels, &image->columns, &image->rows, &sixel_palette, &image->colors) != 0)
+  if (sixel_decode((unsigned char *)sixel_buffer, &sixel_pixels, &image->columns, &image->rows, &sixel_palette, &image->colors) != MagickTrue)
     {
       sixel_buffer=(char *) RelinquishMagickMemory(sixel_buffer);
       ThrowReaderException(CorruptImageError,"CorruptImage");
