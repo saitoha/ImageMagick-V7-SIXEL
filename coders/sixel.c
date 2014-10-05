@@ -61,6 +61,7 @@
 #include "MagickCore/monitor.h"
 #include "MagickCore/monitor-private.h"
 #include "MagickCore/pixel-accessor.h"
+#include "MagickCore/pixel-private.h"
 #include "MagickCore/quantize.h"
 #include "MagickCore/quantum-private.h"
 #include "MagickCore/resize.h"
@@ -68,13 +69,14 @@
 #include "MagickCore/splay-tree.h"
 #include "MagickCore/static.h"
 #include "MagickCore/string_.h"
+#include "MagickCore/thread-private.h"
 #include "MagickCore/module.h"
 #include "MagickCore/threshold.h"
 #include "MagickCore/utility.h"
 
-#define RGB(r, g, b) (((r) << 16) + ((g) << 8) +  (b))
-#define PALVAL(n,a,m) (((n) * (a) + ((m) / 2)) / (m))
-#define XRGB(r,g,b) RGB(PALVAL(r, 255, 100), PALVAL(g, 255, 100), PALVAL(b, 255, 100))
+/*
+  Definitions
+*/
 #define SIXEL_PALETTE_MAX 256
 #define SIXEL_OUTPUT_PACKET_SIZE 1024
 
@@ -140,7 +142,7 @@ static int const sixel_default_color_table[] = {
   Forward declarations.
 */
 static MagickBooleanType
-  WriteSIXELImage(const ImageInfo *,Image *,ExceptionInfo *);
+  WriteSIXELImage(const ImageInfo *,Image *);
 
 static int hue_to_rgb(int n1, int n2, int hue)
 {
@@ -706,7 +708,6 @@ static MagickBooleanType sixel_encode_impl(unsigned char *pixels, int width,int 
     unsigned char *map;
     sixel_node_t *np, *tp, top;
     int nwrite;
-    const int sixel_node_sparsity = 10;
 
     context->pos = 0;
 
@@ -768,6 +769,7 @@ static MagickBooleanType sixel_encode_impl(unsigned char *pixels, int width,int 
         if (++i < 6 && (y + 1) < height) {
             continue;
         }
+
         for (c = 0; c < ncolors; c++) {
             for (left = 0; left < width; left++) {
                 if (*(map + c * width + left) == 0) {
@@ -785,7 +787,7 @@ static MagickBooleanType sixel_encode_impl(unsigned char *pixels, int width,int 
                         }
                     }
 
-                    if (n >= sixel_node_sparsity || right + n >= width) {
+                    if (n >= 10 || right + n >= width) {
                         break;
                     }
                     right = right + n - 1;
@@ -955,6 +957,7 @@ static MagickBooleanType IsSIXEL(const unsigned char *magick,const size_t length
 %    o exception: return any errors or warnings in this structure.
 %
 */
+#if defined(FUTURE)
 static Image *ReadSIXELImage(const ImageInfo *image_info,ExceptionInfo *exception)
 {
   char
@@ -969,10 +972,13 @@ static Image *ReadSIXELImage(const ImageInfo *image_info,ExceptionInfo *exceptio
   register char
     *p;
 
+  register IndexPacket
+    *indexes;
+
   register ssize_t
     x;
 
-  register Quantum
+  register PixelPacket
     *r;
 
   size_t
@@ -997,7 +1003,7 @@ static Image *ReadSIXELImage(const ImageInfo *image_info,ExceptionInfo *exceptio
       image_info->filename);
   assert(exception != (ExceptionInfo *) NULL);
   assert(exception->signature == MagickSignature);
-  image=AcquireImage(image_info,exception);
+  image=AcquireImage(image_info);
   status=OpenBlob(image_info,image,ReadBinaryBlobMode,exception);
   if (status == MagickFalse)
     {
@@ -1033,26 +1039,26 @@ static Image *ReadSIXELImage(const ImageInfo *image_info,ExceptionInfo *exceptio
   /*
     Decode SIXEL
   */
-  if (sixel_decode((unsigned char *)sixel_buffer, &sixel_pixels, &image->columns, &image->rows, &sixel_palette, &image->colors) != MagickTrue)
+  if (sixel_decode((unsigned char *)sixel_buffer, &sixel_pixels, &image->columns, &image->rows, &sixel_palette, &image->colors) == MagickFalse)
     {
       sixel_buffer=(char *) RelinquishMagickMemory(sixel_buffer);
       ThrowReaderException(CorruptImageError,"CorruptImage");
     }
+  sixel_buffer=(char *) RelinquishMagickMemory(sixel_buffer);
   image->depth=24;
   image->storage_class=PseudoClass;
 
-  if (AcquireImageColormap(image,image->colors,exception) == MagickFalse)
+  if (AcquireImageColormap(image,image->colors) == MagickFalse)
     {
       sixel_pixels=(unsigned char *) RelinquishMagickMemory(sixel_pixels);
       sixel_palette=(unsigned char *) RelinquishMagickMemory(sixel_palette);
       ThrowReaderException(ResourceLimitError,"MemoryAllocationFailed");
     }
-  for (i = 0; i < image->colors; ++i)
-    {
-      image->colormap[i].red   = ScaleCharToQuantum(sixel_palette[i * 4 + 0]);
-      image->colormap[i].green = ScaleCharToQuantum(sixel_palette[i * 4 + 1]);
-      image->colormap[i].blue  = ScaleCharToQuantum(sixel_palette[i * 4 + 2]);
-    }
+  for (i = 0; i < image->colors; ++i) {
+    image->colormap[i].red   = ScaleCharToQuantum(sixel_palette[i * 4 + 0]);
+    image->colormap[i].green = ScaleCharToQuantum(sixel_palette[i * 4 + 1]);
+    image->colormap[i].blue  = ScaleCharToQuantum(sixel_palette[i * 4 + 2]);
+  }
 
   j=0;
   if (image_info->ping == MagickFalse)
@@ -1063,13 +1069,14 @@ static Image *ReadSIXELImage(const ImageInfo *image_info,ExceptionInfo *exceptio
       for (y=0; y < (ssize_t) image->rows; y++)
       {
         r=QueueAuthenticPixels(image,0,y,image->columns,1,exception);
-        if (r == (Quantum *) NULL)
+        if (r == (PixelPacket *) NULL)
           break;
+        indexes=GetAuthenticIndexQueue(image);
         for (x=0; x < (ssize_t) image->columns; x++)
         {
           j=(ssize_t) sixel_pixels[y * image->columns + x];
-          SetPixelIndex(image,j,r);
-          r+=GetPixelChannels(image);
+          SetPixelIndex(indexes+x,j);
+          r++;
         }
         if (SyncAuthenticPixels(image,exception) == MagickFalse)
           break;
@@ -1089,6 +1096,7 @@ static Image *ReadSIXELImage(const ImageInfo *image_info,ExceptionInfo *exceptio
   (void) CloseBlob(image);
   return(GetFirstImageInList(image));
 }
+#endif
 
 /*
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -1119,16 +1127,20 @@ ModuleExport size_t RegisterSIXELImage(void)
     *entry;
 
   entry=SetMagickInfo("SIXEL");
+#if defined(FUTURE)
   entry->decoder=(DecodeImageHandler *) ReadSIXELImage;
   entry->encoder=(EncodeImageHandler *) WriteSIXELImage;
+#endif
   entry->magick=(IsImageFormatHandler *) IsSIXEL;
   entry->adjoin=MagickFalse;
   entry->description=ConstantString("DEC SIXEL Graphics Format");
   entry->module=ConstantString("SIXEL");
   (void) RegisterMagickInfo(entry);
   entry=SetMagickInfo("SIX");
+#if defined(FUTURE)
   entry->decoder=(DecodeImageHandler *) ReadSIXELImage;
   entry->encoder=(EncodeImageHandler *) WriteSIXELImage;
+#endif
   entry->magick=(IsImageFormatHandler *) IsSIXEL;
   entry->adjoin=MagickFalse;
   entry->description=ConstantString("DEC SIXEL Graphics Format");
@@ -1189,13 +1201,17 @@ ModuleExport void UnregisterSIXELImage(void)
 %    o exception: return any errors or warnings in this structure.
 %
 */
-static MagickBooleanType WriteSIXELImage(const ImageInfo *image_info,Image *image,ExceptionInfo *exception)
+#if defined(FUTURE)
+static MagickBooleanType WriteSIXELImage(const ImageInfo *image_info,Image *image)
 {
+  ExceptionInfo
+    *exception;
+
   MagickBooleanType
     status;
 
-  register const Quantum
-    *p;
+  register const IndexPacket
+    *indexes;
 
   register ssize_t
     i,
@@ -1221,17 +1237,17 @@ static MagickBooleanType WriteSIXELImage(const ImageInfo *image_info,Image *imag
   assert(image->signature == MagickSignature);
   if (image->debug != MagickFalse)
     (void) LogMagickEvent(TraceEvent,GetMagickModule(),"%s",image->filename);
-  assert(exception != (ExceptionInfo *) NULL);
+  exception=(&image->exception);
   status=OpenBlob(image_info,image,WriteBinaryBlobMode,exception);
   if (status == MagickFalse)
     return(status);
   if (IssRGBCompatibleColorspace(image->colorspace) == MagickFalse)
-    (void) TransformImageColorspace(image,sRGBColorspace,exception);
+    (void) TransformImageColorspace(image,sRGBColorspace);
   opacity=(-1);
-  if (image->alpha_trait != BlendPixelTrait)
+  if (image->matte == MagickFalse)
     {
       if ((image->storage_class == DirectClass) || (image->colors > 256))
-        (void) SetImageType(image,PaletteType,exception);
+        (void) SetImageType(image,PaletteType);
     }
   else
     {
@@ -1243,37 +1259,37 @@ static MagickBooleanType WriteSIXELImage(const ImageInfo *image_info,Image *imag
         Identify transparent colormap index.
       */
       if ((image->storage_class == DirectClass) || (image->colors > 256))
-        (void) SetImageType(image,PaletteBilevelMatteType,exception);
+        (void) SetImageType(image,PaletteBilevelMatteType);
       for (i=0; i < (ssize_t) image->colors; i++)
-        if (image->colormap[i].alpha != OpaqueAlpha)
+        if (image->colormap[i].opacity != OpaqueOpacity)
           {
             if (opacity < 0)
               {
                 opacity=i;
                 continue;
               }
-            alpha=(Quantum) TransparentAlpha-(MagickRealType)
-              image->colormap[i].alpha;
-            beta=(Quantum) TransparentAlpha-(MagickRealType)
-              image->colormap[opacity].alpha;
+            alpha=(Quantum) TransparentOpacity-(MagickRealType)
+              image->colormap[i].opacity;
+            beta=(Quantum) TransparentOpacity-(MagickRealType)
+              image->colormap[opacity].opacity;
             if (alpha < beta)
               opacity=i;
           }
       if (opacity == -1)
         {
-          (void) SetImageType(image,PaletteBilevelMatteType,exception);
+          (void) SetImageType(image,PaletteBilevelMatteType);
           for (i=0; i < (ssize_t) image->colors; i++)
-            if (image->colormap[i].alpha != OpaqueAlpha)
+            if (image->colormap[i].opacity != OpaqueOpacity)
               {
                 if (opacity < 0)
                   {
                     opacity=i;
                     continue;
                   }
-                alpha=(Quantum) TransparentAlpha-(MagickRealType)
-                  image->colormap[i].alpha;
-                beta=(Quantum) TransparentAlpha-(MagickRealType)
-                  image->colormap[opacity].alpha;
+                alpha=(Quantum) TransparentOpacity-(MagickRealType)
+                  image->colormap[i].opacity;
+                beta=(Quantum) TransparentOpacity-(MagickRealType)
+                  image->colormap[opacity].opacity;
                 if (alpha < beta)
                   opacity=i;
               }
@@ -1299,18 +1315,13 @@ static MagickBooleanType WriteSIXELImage(const ImageInfo *image_info,Image *imag
     Define SIXEL pixels.
   */
   output = sixel_output_create(image);
-  sixel_pixels=(unsigned char *) AcquireQuantumMemory((size_t) image->columns * image->rows,1);
+  sixel_pixels =(unsigned char *) AcquireQuantumMemory((size_t) image->columns * image->rows,1);
   for (y=0; y < (ssize_t) image->rows; y++)
   {
-    p=GetVirtualPixels(image,0,y,image->columns,1,exception);
-    if (p == (const Quantum *) NULL)
-      break;
+    (void) GetVirtualPixels(image,0,y,image->columns,1,exception);
+    indexes=GetVirtualIndexQueue(image);
     for (x=0; x < (ssize_t) image->columns; x++)
-      {
-        sixel_pixels[y * image->columns + x]
-            = ((ssize_t) GetPixelIndex(image,p));
-        p+=GetPixelChannels(image);
-      }
+      sixel_pixels[y * image->columns + x] = ((ssize_t) GetPixelIndex(indexes + x));
   }
   status = sixel_encode_impl(sixel_pixels, image->columns, image->rows,
                           sixel_palette, image->colors, -1,
@@ -1320,3 +1331,4 @@ static MagickBooleanType WriteSIXELImage(const ImageInfo *image_info,Image *imag
   (void) CloseBlob(image);
   return(status);
 }
+#endif
