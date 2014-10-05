@@ -15,7 +15,7 @@
 %                              Software Design                                %
 %                               Hayaki Saito                                  %
 %                              September 2014                                 %
-%                     Based on kmiya@culti's sixel decoder                    %
+%                     Based on kmiya's sixel(2014-3-28)                       %
 %                                                                             %
 %                                                                             %
 %  Copyright 1999-2014 ImageMagick Studio LLC, a non-profit organization      %
